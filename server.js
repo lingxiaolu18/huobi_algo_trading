@@ -1,0 +1,184 @@
+const ccxt = require('ccxt');
+require('dotenv').config();
+var orderBook = {
+    'token':{
+        'cost': '10000',
+        'buyOrderId': 'orderNumber',
+        'sellOrderId': 'orderNumber'
+    }
+};
+(async function () {
+    var ex = new ccxt.huobipro({ 'apiKey': process.env.accessKey, 'secret': process.env.secretKey});
+    // ex.hostname = 'api-aws.huobi.pro'
+    console.log(`hostname: ${ex.hostname}`)
+    // console.log (ex.id)
+    // console.log (ex.id,  await ex.fetchTrades ('ETH/USDT'))
+    //hardcoded token list to subscribe:(maybe change in the future)
+    const tokenList = ['btcusdt'];
+    var accountInfo = await getAccountInfo();
+    var accountId = accountInfo.data[0].id;
+    var accountState = accountInfo.data[0].state;
+    var accountType = accountInfo.data[0].type;
+    // let oi = (await placeOrder(accountId, 'dogeusdt', 'buy-market', '5'));
+    // let data = await placeOrder(accountId, 'dogeusdt', 'sell-stop-limit', '20', '0.4', null, null, '0.3', 'lte')
+    console.log((await getOrderDetail('277468845673708', 'dogeusdt')).average)
+    // let data = await placeOrder(accountId, 'dogeusdt', 'buy-limit', '50', '0.1')
+
+    //Get account info
+    function getAccountInfo(){
+        return ex.privateGetAccountAccounts()
+        /*
+        {
+        status: 'ok',
+        data: [ { id: '26502858', type: 'spot', subtype: '', state: 'working' } ]
+        }
+        */
+    }
+    //Get position
+    async function getPosition(token){
+        let data = await ex.privateGetAccountAccountsIdBalance({'id': accountId, 'state': 'true', 'type': accountType});
+        for(let i = 0; i < data.data.list.length; i++){
+            if(data.data.list[i].currency === token) return parseFloat(data.data.list[i].balance);
+        }
+        /*
+        {
+        status: 'ok',
+        data: {
+            id: '26502858',
+            type: 'spot',
+            state: 'working',
+            list: 
+            [
+                [Object], [Object]... 714 more items
+            ]
+        }
+        }
+        [object]: { currency: 'mvl', type: 'frozen', balance: '0' } //balance是数量
+    */
+    }
+
+    function placeOrder(accountId, symbol, type, amount, price, source, clientOrderId, stopPrice, operator){
+        //Order total cannot be lower than 5
+        params = {};
+        params['account-id'] = accountId
+        params.symbol = symbol
+        params.type = type
+        params.amount = amount
+        if(price) params.price = price
+        if(clientOrderId) params['client-order-id'] = clientOrderId
+        if(stopPrice) params['stop-price'] = stopPrice
+        if(operator) params.operator = operator
+        params.source = source? source : 'spot-api'
+        return ex.privatePostOrderOrdersPlace(params)
+        /*
+        { status: 'ok', data: '276179823072288' } data is order id
+        */
+    }
+
+    function cancelOrder(orderId){
+        params = [];
+        params.push(orderId)
+        return ex.privatePostOrderOrdersBatchcancel({'order-ids': params})
+    }
+
+    function getKLine(period, size, symbol){
+        return ex.marketGetHistoryKline({'period': period, 'size': size, 'symbol': symbol})
+        /*
+        {
+            ch: 'market.btcusdt.kline.5min',
+            status: 'ok',
+            ts: '1620879311361',
+            data: [
+                {
+                id: '1620879300',
+                open: '50910.49',
+                close: '50895.52',
+                low: '50879.76',
+                high: '50912.15',
+                amount: '4.176982989313263',
+                vol: '212570.94921021067',
+                count: '188'
+                }
+            ]
+        }
+        */
+    }
+
+    async function getMarketPrice(symbol){
+        let candle = await getKLine('1min', '1', symbol);
+        let open = parseFloat(candle.data[0].open);
+        let close = parseFloat(candle.data[0].close);
+        return (open + close) / 2;
+    }
+
+    function getOrderDetail(orderId, symbol){
+        return ex.fetch_order(orderId, symbol)
+    }
+
+    //main function
+    async function startEngine(){
+        //对每一个交易对爬取k线数据
+        tokenList.forEach(token => async() => {
+            let data = ((await getKLine('5min', '1', token)).data)[0];
+            if(data instanceof Error) console.log(`GET ${token} KLINE ==========> ${err}`);
+            //if increase > 10% in the last 5min && increase < 3% in the last day
+            if((parseFloat(data.close) - parseFloat(data.open)) / parseFloat(data.open) > 0.1){
+                let moreData = ((await getKLine('1day', '1', token)).data)[0];
+                if((moreData.close - moreData.open) / moreData.open < 0.03){
+                    let position = await getPosition(token);
+                    // if有持仓, 判断是否要提高保护单执行价位
+                    if(position > 0){
+                        //获取token当前的价格
+                        let marketPrice = await getMarketPrice(token);
+                        if(!marketPrice) console.log(`GET ${token} Price ==========> ${marketPrice}`);
+                        //如果涨幅大于阈值S,取消保护单，并下达新的保护单
+                        if(marketPrice / orderBook[token].cost - 1 > process.env.S){
+                            let cancelOrderResponse = await cancelOrder(orderBook[token].sellOrderId);
+                            if(!cancelOrderResponse) console.log(`Cancel Order ${orderId} ---------> ${cancelOrderResponse}`);
+                            if(response instanceof Error){
+                                //deal w/ different errors
+                            }
+                            else{
+                                //下达新的止损
+                                let stopLossPrice = marketPrice*(1 - process.env.stopRatio);
+                                let placeNewProtection = await placeOrder(accountId, token, 'sell-stop-limit', position, (stopLossPrice*0.9).toString(), null, null, stopLossPrice.toString(), 'lte');
+                                if(!placeNewProtection.data) console.log(`place new protection order failed: ${placeNewProtection}`)
+                                else orderBook[token].sellOrderId = placeNewProtection.data
+                            }
+                        }
+                        else{
+                            //do nothing...
+                        }
+                    }
+                    //持仓为0，下买单和保护单,查询建仓成本(test /v1/order/orders/{order-id}/matchresults)
+                    else{
+                        let usdtBal = await getPosition('usdt');
+                        let buyOrderId = (await placeOrder(accountId, token, 'buy-market', 0.25 * usdtBal)).data;
+                        let buyOrder = await getOrderDetail(buyOrderId, token);
+                        let amount = buyOrder.filled;
+                        let cost = 0.25 * usdtBal / amount;
+                        //place protect order
+                        let protectOrder = await placeOrder(accountId, token, 'sell-stop-limit', amount, null, null, null, 0.9*parseFloat(cost), 'lte');
+                        let protectOrderId = protectOrder.data;
+                        // let protectOrderDetail = fetch_order(protectOrderId, token);
+                        orderBook[token].cost = cost;
+                        orderBook[token].buyOrderId = buyOrderId;
+                        orderBook[token].sellOrderId = protectOrderId;
+                    }
+                }
+            }
+        });
+    }
+
+    while(1 < 2){
+        startEngine();
+        await sleep(5*60*1000);
+    }
+    
+}) ();
+
+function sleep(ms){
+    return new Promise(resolve => {
+        setTimeout(resolve, ms);
+    });
+}

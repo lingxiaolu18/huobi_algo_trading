@@ -1,0 +1,23 @@
+{
+  "name": "hb_algo",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^0.21.1",
+    "ccxt": "^1.49.73",
+    "crypto-js": "^4.0.0",
+    "dotenv": "^9.0.1",
+    "express": "^4.17.1",
+    "huobi-node": "0.0.1",
+    "lodash": "^4.17.21",
+    "moment": "^2.29.1",
+    "nodejs-base64-encode": "^1.1.0"
+  }
+}
