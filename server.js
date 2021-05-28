@@ -23,25 +23,23 @@ var tokenList = ['valueusdt'];
     var accountId = accountInfo.data[0].id;
     var accountState = accountInfo.data[0].state;
     var accountType = accountInfo.data[0].type;
-    // let oi = (await placeOrder(accountId, 'dogeusdt', 'buy-market', '5'));
-    // let data = await placeOrder(accountId, 'dogeusdt', 'sell-stop-limit', '20', '0.4', null, null, '0.3', 'lte')
-    // console.log((await getOrderDetail('277468845673708', 'dogeusdt')).average)
-    // let data = await placeOrder(accountId, 'dogeusdt', 'buy-limit', '50', '0.1')
 
+    tokenList.forEach(token => fetchDb(token));
+    console.log(`fetch db done...`)
 
-
-    tokenList.forEach(token => async() => {
+    async function fetchDb(token){
+        console.log(token);
+        let cost = await connector.then(() => {return findCost(token)}) ; //可能有问题
+        if(cost) orderBook[token].cost = cost;
         let orders = await getExistingOrders(accountId, token).data;
+        if(!orders) return;
         for(let i = 0; i < orders.length; i++){
             if(orders[i].type == "sell-stop-limit"){
                 orderBook[token].sellOrderId = orders[i].id;
                 break;
             } 
         }
-        let cost = await connector.then(() => {return findCost(token)}) ;
-        if(cost) orderBook[token].cost = cost;
-    })
-
+    }
 
     // console.log(await ex.privateGetOrderOpenOrders(accountId, 'btcusdt'));
     //Get account info
@@ -148,7 +146,9 @@ var tokenList = ['valueusdt'];
     async function startEngine(){
         //对每一个交易对爬取k线数据
         tokenList.forEach(token => async() => {
+            console.log(`fetching data`)
             let data = ((await getKLine('5min', '1', token)).data)[0];
+            console.log(`${token}: ${data.open}, ${data.close}`);
             if(!data || data instanceof Error) console.log(`GET ${token} KLINE ==========> ${err}`);
             //if increase > 10% in the last 5min && increase < 3% in the last day
             if((parseFloat(data.close) - parseFloat(data.open)) / parseFloat(data.open) > process.env.buyLimit){
@@ -204,10 +204,9 @@ var tokenList = ['valueusdt'];
             }
         });
     }
-
-    while(1 < 2){
-        startEngine();
+    while(true){
         console.log(`looping...`)
+        startEngine();
         await sleep(60*1000);
     }
 }) ();
