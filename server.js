@@ -245,8 +245,15 @@ var exceptions = {
 
     //main function
     async function startEngine(){
-        //对每一个交易对爬取k线数据
-        tokenList.forEach(token => engine(token));
+        const ts1 = Date.now();
+        // await Promise.all(tokenList.map(async (token) => {
+        //     const res = await engine(token);
+        // }));
+        for(const token of tokenList){
+            const res = await engine(token);
+        }
+        const ts2 = Date.now();
+        console.log(`time elapsed: ${ts2 - ts1}`);
     }
 
     async function getCommonSymbols(){
@@ -254,10 +261,20 @@ var exceptions = {
     }
 
     async function engine(token){
+        //对每一个交易对爬取k线数据
         console.log(token);
-        let data = ((await getKLine('5min', '1', token)).data)[0];
-        console.log(`${token}: open: ${data.open}, close: ${data.close}, change: ${(100*(data.close-data.open)/data.open).toPrecision(3)}%`);
-        if(!data || data instanceof Error) console.log(`GET ${token} KLINE ==========> ${err}`);
+        let data;
+        try{
+            data = ((await getKLine('5min', '1', token)).data)[0];
+            console.log(`${token}: open: ${data.open}, close: ${data.close}, change: ${(100*(data.close-data.open)/data.open).toPrecision(3)}%`);
+        }catch(err){
+            console.log(`Fetch kline for ${token} err: ${err}`);
+            return;
+        }        
+        if(!data || data instanceof Error){
+            console.log(`GET ${token} KLINE ==========> ${err}`);
+            return;
+        } 
         //if increase > 10% in the last 5min && increase < 3% in the last day
         if((parseFloat(data.close) - parseFloat(data.open)) / parseFloat(data.open) > process.env.buyLimit){
             let moreData = ((await getKLine('1day', '1', token)).data)[0];
@@ -266,7 +283,7 @@ var exceptions = {
                 // console.log(orderBook[token].sellOrderId)
                 if(orderBook[token].sellOrderId){//position > 0
                     //获取当前持仓
-                    let position = await getPosition(token);
+                    let position = (await getOrderDetail(orderBook[token].sellOrderId, token)).data.amount;
                     //获取token当前的价格
                     let marketPrice = await getMarketPrice(token);
                     if(!marketPrice) console.log(`GET ${token} Price ==========> ${marketPrice}`);
@@ -293,7 +310,7 @@ var exceptions = {
                     try{
                         let buyOrderId = (await placeOrder(accountId, token, 'buy-market', (process.env.R * usdtBal).toPrecision(orderBook[token].info["value-precision"]))).data;
                     }catch(err){
-                        console.log(`WARNING: place buy order for ${token} failed`);
+                        console.log(`WARNING: place buy order for ${token} failed: ${err}`);
                         return;
                     }
                     let buyOrder = await getOrderDetail(buyOrderId, token);
@@ -314,6 +331,7 @@ var exceptions = {
                 }
             }
         }
+        return;
     }
 
     while(true){
