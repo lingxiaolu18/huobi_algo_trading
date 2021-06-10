@@ -4,6 +4,7 @@ const recordSchema = require('./store/db.js');
 const mongoose = require('mongoose');
 const connectionString = `mongodb+srv://sy:${process.env.mongoPassword}@huobi01.945pd.mongodb.net/Huobi01?retryWrites=true&w=majority`;
 const Record = mongoose.model('record', recordSchema);
+const fs = require('fs');
 
 var orderBook = {
     // 'token':{
@@ -96,10 +97,21 @@ var exceptions = {
     'grtusdt':false,
     'oneusdt':false,
     'ftmusdt':false,
-    'zrxusdt':false
+    'zrxusdt':false,
+    'botusdt': false,
+    'sunusdt': false,
+    'venusdt': false,
+    'mcousdt': false,
+    'yamv2usdt': false,
+    'lendusdt': false,
+    'sklusdt': false,
+    'fil3susdt': false,
+    'sandusdt': false,
+    'axsusdt': false,
 }; 
 
 (async function () {
+    // process.env.UV_THREADPOOL_SIZE = 128;
     const connector = mongoose.connect(connectionString, { useNewUrlParser: true, useUnifiedTopology: true });
     var ex = new ccxt.huobipro({ 'apiKey': process.env.accessKey, 'secret': process.env.secretKey});
     var accountInfo = await getAccountInfo();
@@ -112,23 +124,30 @@ var exceptions = {
     for(let i = 0; i < symbols.length; i++){
         if(symbols[i]['quote-currency'] !== 'usdt') continue;
         if(exceptions.hasOwnProperty((symbols[i]['base-currency'] + 'usdt'))) continue;
+        // console.log(symbols[i]['base-currency']);
+        // fs.appendFileSync(__dirname + '/tokens.txt', symbols[i]['base-currency']+'\n', 'UTF-8', {'flags': 'a+'}, err => {
+        //     if(err){
+        //         console.error(err);
+        //         return;
+        //     }
+        // })
         let tokenName = symbols[i]['base-currency'] + 'usdt';
         tokenList.push(tokenName);
         orderBook[tokenName] = {};
         orderBook[tokenName].info = symbols[i];
     }
-    
+    tokenList = tokenList.slice(0, tokenList.length / 8);
     console.log(`list length: ${tokenList.length}`);
-    tokenList.forEach(token => fetchDb(token));
+
+    await Promise.all(tokenList.map(async (token) => {
+        await fetchDb(token);
+    }))
     // console.log(`fetch db done...${orderBook}`)
 
     async function fetchDb(token){
-        // console.log(token);
         let cost = await connector.then(() => {return findCost(token)}) ;
-        // orderBook[token] = {};
         if(cost){
             orderBook[token].cost = cost;
-            // console.log(orderBook[token]);
         } 
         let orders = await getExistingOrders(accountId, token).data;
         if(!orders) return;
@@ -205,7 +224,7 @@ var exceptions = {
         return ex.privatePostOrderOrdersBatchcancel({'order-ids': params});
     }
 
-    function getKLine(period, size, symbol){
+    async function getKLine(period, size, symbol){
         return ex.marketGetHistoryKline({'period': period, 'size': size, 'symbol': symbol});
         /*
         {
@@ -246,12 +265,17 @@ var exceptions = {
     //main function
     async function startEngine(){
         const ts1 = Date.now();
-        // await Promise.all(tokenList.map(async (token) => {
+        /*let promises = tokenList.map((token) => {
+            engine(token);
+        });
+        console.log(promises);
+        let res = await Promise.all(promises);*/
+        // for(const token of tokenList){
         //     const res = await engine(token);
-        // }));
-        for(const token of tokenList){
-            const res = await engine(token);
-        }
+        // }
+        await Promise.all(tokenList.map(async (token) => {
+            await engine(token);
+        }))
         const ts2 = Date.now();
         console.log(`time elapsed: ${ts2 - ts1}`);
     }
@@ -269,11 +293,11 @@ var exceptions = {
             console.log(`${token}: open: ${data.open}, close: ${data.close}, change: ${(100*(data.close-data.open)/data.open).toPrecision(3)}%`);
         }catch(err){
             console.log(`Fetch kline for ${token} err: ${err}`);
-            return;
+            return Promise.reject(err);
         }        
         if(!data || data instanceof Error){
             console.log(`GET ${token} KLINE ==========> ${err}`);
-            return;
+            return Promise.reject(err);
         } 
         //if increase > 10% in the last 5min && increase < 3% in the last day
         if((parseFloat(data.close) - parseFloat(data.open)) / parseFloat(data.open) > process.env.buyLimit){
@@ -291,7 +315,7 @@ var exceptions = {
                     if(marketPrice / orderBook[token].cost - 1 > process.env.S){
                         try{
                             let cancelOrderResponse = await cancelOrder(orderBook[token].sellOrderId);
-                            console.log(`cancel old protect order...`)
+                            console.log(`cancel old protect order...${cancelOrderResponse}`)
                             //下达新的止损
                             console.log(`place new protect order...`)
                             let stopLossPrice = marketPrice*(1 - process.env.stopRatio);
@@ -299,7 +323,8 @@ var exceptions = {
                             if(!placeNewProtection.data) console.log(`place new protection order failed: ${placeNewProtection}`)
                             else orderBook[token].sellOrderId = placeNewProtection.data
                         }catch(err){
-                            console.log(`WARNING: Replace protect order ${orderBook[token].sellOrderId} failed`)
+                            console.log(`WARNING: Replace protect order ${orderBook[token].sellOrderId} failed`);
+                            return Promise.reject(err);
                         }
                     }
                 }
@@ -311,7 +336,7 @@ var exceptions = {
                         let buyOrderId = (await placeOrder(accountId, token, 'buy-market', (process.env.R * usdtBal).toPrecision(orderBook[token].info["value-precision"]))).data;
                     }catch(err){
                         console.log(`WARNING: place buy order for ${token} failed: ${err}`);
-                        return;
+                        return Promise.reject(err);
                     }
                     let buyOrder = await getOrderDetail(buyOrderId, token);
                     // console.log(buyOrder);
@@ -321,7 +346,7 @@ var exceptions = {
                     if(!record) await createRecord(token, cost);
                     else await updateRecord(token, cost);
                     //place protect order
-                    console.log(`placing protect order...selling ${Math.floor(amount)} ${token}`)
+                    console.log(`placing protect order...selling ${Math.floor(amount)} ${token}`);
                     let protectOrder = await placeOrder(accountId, token, 'sell-stop-limit', amount.toPrecision(orderBook[token].info["amount-precision"]), ((0.95*0.9*cost).toPrecision(orderBook[token].info["price-precision"])), null, null, ((0.9*cost).toPrecision(orderBook[token].info["price-precision"])), 'lte');
                     let protectOrderId = protectOrder.data;
                     // let protectOrderDetail = fetch_order(protectOrderId, token);
@@ -331,7 +356,7 @@ var exceptions = {
                 }
             }
         }
-        return;
+        Promise.resolve('loop end');
     }
 
     while(true){
